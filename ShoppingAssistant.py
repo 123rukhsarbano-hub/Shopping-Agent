@@ -102,8 +102,7 @@ def checkout(product_id : int) -> str:
         return f"Error: Product with ProductID {product_id} not found"
 
     name, price = row
-
-    cursor.execute("insert into orders(product_id, product_name, price) values(?,?,?)", (product_id, name, price,),)
+    cursor.execute("insert into orders(product_id, product_name, price) values(?,?,?)", (product_id, name, price,))
     order_id = cursor.lastrowid
     # print(f"order_id: {order_id}")
     conn.commit()
@@ -115,8 +114,8 @@ def checkout(product_id : int) -> str:
 @tool
 def describe_product_image(image_path: str) -> str:
     """Analyse the product image and return the key attributes of the product as a JSON object.
-    Use this when user uploads photo of a product  they are interested in.
-    the return attributes can be directly used by the search_products tool to find similar product in the store.
+    Use this when user uploads photo of a product they are interested in.
+    The return attributes can be directly used by the search_products tool to find similar products in the store.
     """
     with open(image_path, "rb") as f: 
         image_path = base64.b64encode(f.read()).decode('utf-8')
@@ -145,12 +144,13 @@ def describe_product_image(image_path: str) -> str:
     result = vision_llm.invoke([message])
     return result.text
 
+@tool
 def order_history() -> str:
-    """Return the json array of all the previous orders, each with:"
+    """Return the json array of all the previous orders, each with:
     - id (int)
     - product_id (int)
-    - product_name (int)
-    - price (int)
+    - product_name (string)
+    - price (float)
     - ordered_at (string, ISO format)
     """
     conn = sqlite3.connect(DB_PATH)
@@ -168,56 +168,43 @@ def order_history() -> str:
             }
         for row in rows
     ]
-    return json.dumps(orders)    
+    return json.dumps(orders)
 
-def input_gaurdrail(question: str):
-    """Check if question is valid for shopping agent or not
-    if not return false else return true"""
-    shopping_keywords = ["buy", "price", "discount", "deal", "organic", "cart", "checkout",
-            "shop", "purchase", "order", "filter", "product", "yes", "rating"]
+# System prompt and agent configuration
+SYSTEM_PROMPT = """You are a shopping assistant.
 
-    for keyword in shopping_keywords:
-        if keyword in question.lower():
-            return True
+Follow these rules:
 
-    print(f"Invalid question: {question} is not related to shopping")
-    print("This assistant is focused on shopping. Could you rephrase your request in terms of products or purchases?")
-    return False
+1. PRODUCT SEARCH
+- For any new request to find, search, show, or filter products, ALWAYS call search_products FIRST.
+- Extract query, max_price, and is_organic from the user's request.
+- Do NOT call get_product_rating or checkout before search_products.
+
+2. PRODUCT RESULTS
+- After search_products returns products, call get_product_rating for each returned product.
+- Show the products as a numbered list with product details, rating, and review count.
+
+3. ORDERING
+- Only call checkout when the user explicitly wants to buy/order a product.
+- The product_id must come from a product previously returned by search_products.
+- If multiple products were shown, use the user's selected index.
+- If only one product was shown, a confirmation such as "yes" is sufficient to proceed.
+
+4. IMPORTANT
+- Never invent a product_id.
+- Never use get_product_rating as the first tool for a new product search.
+- Never use checkout before a product has been found through search_products.
+- If no products match, clearly inform the user.
+"""
+
+config = {"configurable":{"thread_id": "str(uuid.uuid4())"}}
+
+agent = create_agent(llm,
+            tools=[search_products, get_product_rating, checkout, describe_product_image, order_history],
+            system_prompt=SYSTEM_PROMPT,
+            checkpointer=InMemorySaver())
 
 if __name__ == "__main__":
-    SYSTEM_PROMPT = """You are a shopping assistant.
-
-    Follow these rules:
-
-    1. PRODUCT SEARCH
-    - For any new request to find, search, show, or filter products, ALWAYS call search_products FIRST.
-    - Extract query, max_price, and is_organic from the user's request.
-    - Do NOT call get_product_rating or checkout before search_products.
-
-    2. PRODUCT RESULTS
-    - After search_products returns products, call get_product_rating for each returned product.
-    - Show the products as a numbered list with product details, rating, and review count.
-
-    3. ORDERING
-    - Only call checkout when the user explicitly wants to buy/order a product.
-    - The product_id must come from a product previously returned by search_products.
-    - If multiple products were shown, use the user's selected index.
-    - If only one product was shown, a confirmation such as "yes" is sufficient to proceed.
-
-    4. IMPORTANT
-    - Never invent a product_id.
-    - Never use get_product_rating as the first tool for a new product search.
-    - Never use checkout before a product has been found through search_products.
-    - If no products match, clearly inform the user.
-    """
-
-    config = {"configurable":{"thread_id": "str(uuid.uuid4())"}}
-
-    agent = create_agent(llm,
-                tools=[search_products, get_product_rating, checkout, describe_product_image, order_history],
-                system_prompt=SYSTEM_PROMPT,
-                checkpointer=InMemorySaver())
-
     # 1. Run agent
     while True:
         type = input("You want to search(by text/image) or order or quit:")
